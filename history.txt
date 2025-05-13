@@ -1,0 +1,253 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\PollQuestion;
+use App\Models\Prediction;
+use App\Models\PredictMatch;
+use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Validator;
+
+
+class PredictionHistoryController extends Controller
+{
+    public function sdf()
+    {
+        $userId = Auth::id();
+        dd($userId);
+    }
+    public function processPredictions( $userId)
+    {
+       $predictions = PredictMatch::where('user_id', $userId)->
+    orderBy("created_at", "desc")
+    ->get();
+
+
+        $precitdata = [];
+
+        foreach ($predictions as $data) {
+            $fixtureId = $data->fixture_id;
+
+            // Fetch data about the corresponding fixture from the external API
+            $apiKey = '2b3543e14b7d8828d99be9bffefb6aeb'; // Replace 'YOUR_API_KEY' with your actual API key
+            $response = Http::withHeaders([
+                'x-rapidapi-host' => 'v3.football.api-sports.io',
+                'x-rapidapi-key' => $apiKey,
+            ])->get('https://v3.football.api-sports.io/fixtures', [
+                'id' => $fixtureId,
+            ]);
+
+            if ($response->successful()) {
+                $fixtureData = $response->json()['response'];
+
+                // Process the fixture data
+                $matchresult = [
+                    'fixture_id' => $fixtureData[0]['fixture']['id'],
+                    'team_a_id' => $fixtureData[0]['teams']['home']['id'],
+                    'team_b_id' => $fixtureData[0]['teams']['away']['id'],
+                    'team_a_score' => $fixtureData[0]['goals']['home'],
+                    'team_b_score' => $fixtureData[0]['goals']['away'],
+                    'team_a_result' => $fixtureData[0]['teams']['home']['winner'],
+                    'team_b_result' => $fixtureData[0]['teams']['away']['winner'],
+                    'league' => $fixtureData[0]['league']['name'],
+                    'round' => $fixtureData[0]['league']['round'],
+                ];
+
+                // Process the predict data
+                $predictdata = [
+                    'league_id' => $data->league_id,
+                    'fixture_id' => $data->fixture_id,
+                    'team_a_id' => $data->team_a_id,
+                    'team_b_id' => $data->team_b_id,
+                    'team_a_predict_score' => $data->team_a_predict_score,
+                    'team_b_predict_score' => $data->team_b_predict_score,
+                    'score_time' => $data->score_time,
+                    'top_scorer' => $data->top_scorer,
+
+                ];
+
+                // Calculate predictions result
+                $team_a_predictions_result = $data->team_a_predict_score == $matchresult['team_a_score'] ? 5 : 0;
+                $team_b_predictions_result = $data->team_b_predict_score == $matchresult['team_b_score'] ? 5 : 0;
+
+                // Calculate match result
+                $match_result = ($data->team_a_predict_score == $matchresult['team_a_score'] && $data->team_b_predict_score == $matchresult['team_b_score']) ? 'you predict, and you win' : 'you predict, and you loss';
+
+                // Calculate points
+
+                if ($data->team_a_predict_score < $data->team_b_predict_score && $fixtureData[0]['goals']['home'] < $fixtureData[0]['goals']['away']) {
+                    $predictdatapoint = 5;
+                    $messaege = 'you predict , and you win';
+                } elseif ($data->team_a_predict_score > $data->team_b_predict_score && $fixtureData[0]['goals']['home'] > $fixtureData[0]['goals']['away']) {
+                    $predictdatapoint = 5;
+                    $messaege = 'you predict, and you win';
+                } elseif ($data->team_a_predict_score == $data->team_b_predict_score && $fixtureData[0]['goals']['home'] == $fixtureData[0]['goals']['away']) {
+                    $predictdatapoint = 5;
+                    $messaege = 'you predict , and you win';
+                } else {
+                    $predictdatapoint = 0;
+                    $messaege = 'you predict , and you loss';
+                }
+
+                if ($fixtureData[0]['goals']['home'] == $data->team_a_predict_score && $fixtureData[0]['goals']['away'] ==$data->team_b_predict_score) {
+                    $message = true;
+
+                } else {
+                    $message = false;
+                }
+
+                $top_scorer = 0;
+                $w_point = ($data->team_a_predict_score == $matchresult['team_a_score'] ? 5 : 0) + ($data->team_b_predict_score == $matchresult['team_b_score'] ? 5 : 0);
+                $p_point = $w_point + 2 + $predictdatapoint + $top_scorer;
+                $final_point = $p_point * $data->score_time;
+
+                if($fixtureData[0]['fixture']['status']['short'] == 'FT'){
+
+                    $predictresult = [
+
+                        'home_team_score' => $team_a_predictions_result * $data->score_time,
+                        'away_team_score' => $team_b_predictions_result * $data->score_time,
+                        'winging_point' => $predictdatapoint * $data->score_time,
+                        'score_time' => $data->score_time,
+                        'total_point' => $final_point,
+                        'top_scorer' => $top_scorer,
+                        'W/L/D' => $message,
+                    ];
+
+                }else{
+                    $predictresult = [
+
+                        'home_team_score' => 0,
+                        'away_team_score' => 0,
+                        'winging_point' => 0,
+                        'score_time' => $data->score_time,
+                        'total_point' => 0,
+                        'top_scorer' => 0,
+                        'W/L/D' => false,
+                    ];
+                }
+                // Prepare response data
+
+//
+                $precitdata[] = [
+                    'predictdata' => $predictdata,
+                    'predictresult' => $predictresult,
+                ];
+            } else {
+                return response()->json([
+                    'message' => 'Failed to retrieve fixture data from the API',
+                    'status' => 'fail',
+                ], $response->status());
+            }
+        }
+
+        return $precitdata;
+    }
+
+    public function getFixtureDataAndResponse()
+    {
+        $predictions = Prediction::orderBy("match_time", "asc")->get();
+
+        $fixturesData = [];
+
+        foreach ($predictions as $prediction) {
+            $response = Http::withHeaders([
+                'x-rapidapi-host' => 'v3.football.api-sports.io',
+                'x-rapidapi-key' => '2b3543e14b7d8828d99be9bffefb6aeb', // Replace this with your actual API key
+            ])->get('https://v3.football.api-sports.io/fixtures', [
+                'id' => $prediction->fixture_id,
+            ]);
+
+            if ($response->successful()) {
+                $fixtureData = $response->json()['response'];
+
+                if (is_array($fixtureData) && !empty($fixtureData)) {
+                    if (isset($fixtureData[0]['fixture']) && isset($fixtureData[0]['teams']['home']['name']) && isset($fixtureData[0]['teams']['away']['name'])) {
+                        $fixturesData[] = [
+                            'id' => $prediction->id,
+                            // 'league_id' => $prediction->league_id,
+                            'fixture_id' => $prediction->fixture_id,
+
+                            'teams' => [
+                                'home' => [
+                                    'id' => $fixtureData[0]['teams']['home']['id'],
+                                    'name' => $fixtureData[0]['teams']['home']['name'],
+                                    'logo' => $fixtureData[0]['teams']['home']['logo'],
+                                ],
+                                'away' => [
+                                    'id' => $fixtureData[0]['teams']['away']['id'],
+                                    'name' => $fixtureData[0]['teams']['away']['name'],
+                                    'logo' => $fixtureData[0]['teams']['away']['logo'],
+                                ],
+                            ],
+                            'goals' => [
+                                'home ' => $fixtureData[0]['goals']['home'] ?? 0,
+                                'away' => $fixtureData[0]['goals']['away'] ?? 0,
+                            ],
+                            'status' => [
+                                'long' => $fixtureData[0]['fixture']['status']['long'],
+                                'short' =>  $fixtureData[0]['fixture']['status']['short'],
+                            ],
+
+
+
+                            'userdata' => [], // Initialize userdata as empty array by default
+                        ];
+                    } else {
+                        \Illuminate\Support\Facades\Log::error('Incomplete fixture data for fixture ID: ' . $prediction->fixture_id);
+                    }
+                } else {
+                    \Illuminate\Support\Facades\Log::error('Invalid or empty fixture data for fixture ID: ' . $prediction->fixture_id);
+                }
+            }
+        }
+
+        $data = [
+            'matchdata' => $fixturesData,
+        ];
+
+        $responseData = [
+            'statuscode' => 200,
+            'status' => 'success',
+            'responsedata' => $data,
+        ];
+
+        return $responseData;
+    }
+    public function all_prediction_history(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'user_id' => 'required',
+        ]);
+
+        // If validation fails, return error response
+        if ($validator->fails()) {
+            return response()->json(['error' => $validator->errors()], 422);
+        }
+        $userId = $request->user_id;
+        $precitdata = $this->processPredictions($userId);
+        $responseData = $this->getFixtureDataAndResponse();
+
+        foreach ($responseData['responsedata']['matchdata'] as &$match) {
+            $match['userdata'] = []; // Initialize userdata for each match
+
+            foreach ($precitdata as $prediction) {
+                if ($prediction['predictdata']['fixture_id'] == $match['fixture_id']) {
+                    // If the prediction matches the current fixture, add it to userdata
+                    $match['userdata'][] = [
+                        'predictdata' => $prediction['predictdata'],
+                        'predictresult' => $prediction['predictresult'],
+                    ];
+                }
+            }
+        }
+
+        return response()->json($responseData, 200);
+    }
+
+}
