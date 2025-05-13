@@ -1,2 +1,2 @@
 [phases.setup]
-nixPkgs = ["php81"]
+nixPkgs = ["php82", "composer"]
